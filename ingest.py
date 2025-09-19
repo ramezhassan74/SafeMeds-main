@@ -2,21 +2,25 @@
 import psycopg
 from sentence_transformers import SentenceTransformer
 
-# إعدادات قاعدة البيانات
+# Database configuration
 DB_URL = "postgresql://postgres:12345@localhost:5432/postgres"
 
-# تحميل الموديل من HuggingFace
+# Load the embedding model from HuggingFace
 model = SentenceTransformer("BAAI/bge-small-en")
 
 # -------------------------------
 # DB utils
 # -------------------------------
 def get_connection():
+    """
+    Create and return a new connection to the PostgreSQL database
+    """
     return psycopg.connect(DB_URL)
 
 def add_embeddings_column():
     """
-    يضيف عمود embeddings للجدول meds لو مش موجود
+    Add an embeddings column to the 'meds' table if it does not already exist.
+    The column type is VECTOR(384) (requires pgvector extension).
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -39,6 +43,11 @@ def add_embeddings_column():
 # Ingest from DB
 # -------------------------------
 def ingest_meds():
+    """
+    Fetch all medicines data from the 'meds' table.
+    Combine drug_name, indication, and notes into a single text string.
+    Returns a list of tuples (id, text).
+    """
     all_texts = []
     conn = get_connection()
     cur = conn.cursor()
@@ -47,6 +56,7 @@ def ingest_meds():
 
     for row in rows:
         med_id, drug_name, indication, notes = row
+        # Join available fields into one text representation
         text = " ".join([drug_name or "", indication or "", notes or ""]).strip()
         if not text:
             continue
@@ -57,6 +67,10 @@ def ingest_meds():
     return all_texts
 
 def update_embeddings():
+    """
+    Generate embeddings for each medicine using the SentenceTransformer model.
+    Update the 'embedding' column in the DB with the generated vectors.
+    """
     conn = get_connection()
     cur = conn.cursor()
 
@@ -73,7 +87,9 @@ def update_embeddings():
 # MAIN
 # -------------------------------
 if __name__ == "__main__":
+    # Step 1: Ensure the embedding column exists
     add_embeddings_column()
+    # Step 2: Generate and update embeddings for all medicines
     update_embeddings()
 
 

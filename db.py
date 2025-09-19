@@ -6,11 +6,12 @@ import psycopg
 from sentence_transformers import SentenceTransformer
 
 # -------------------------------
-# جزء (1): إنشاء قاعدة بيانات SQLite + إدخال بيانات أولية
+# Part (1): SQLite DB + Initial Data
 # -------------------------------
 
 DB_PATH = "bariatric_meds.db"
 
+# Schema for SQLite meds table
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS meds (
 );
 """
 
+# Example entries for seeding SQLite / PostgreSQL
 EXAMPLE_ENTRIES = [
     {
         "drug_name":"Ibuprofen",
@@ -78,6 +80,7 @@ EXAMPLE_ENTRIES = [
     }
 ]
 
+# Create SQLite DB
 def create_db(path=DB_PATH):
     conn = sqlite3.connect(path)
     cur = conn.cursor()
@@ -85,6 +88,7 @@ def create_db(path=DB_PATH):
     conn.commit()
     conn.close()
 
+# Insert single entry into SQLite
 def insert_entry(entry, path=DB_PATH):
     conn = sqlite3.connect(path)
     cur = conn.cursor()
@@ -95,10 +99,12 @@ def insert_entry(entry, path=DB_PATH):
     conn.commit()
     conn.close()
 
+# Seed example entries
 def seed_examples():
     for e in EXAMPLE_ENTRIES:
         insert_entry(e)
 
+# Export SQLite data to CSV
 def export_csv(csv_path="bariatric_meds_export.csv", path=DB_PATH):
     conn = sqlite3.connect(path)
     cur = conn.cursor()
@@ -113,11 +119,14 @@ def export_csv(csv_path="bariatric_meds_export.csv", path=DB_PATH):
     return csv_path
 
 # -------------------------------
-# جزء (2): PostgreSQL Connection + Table + Seed + Search Function
+# Part (2): PostgreSQL Connection + Setup + Search
 # -------------------------------
+
+# Establish PostgreSQL connection
 def get_connection():
     return psycopg.connect("postgresql://postgres:12345@localhost:5432/postgres")
 
+# Create PostgreSQL meds table with vector column for embeddings
 def create_postgres_table():
     conn = get_connection()
     cur = conn.cursor()
@@ -137,12 +146,13 @@ def create_postgres_table():
         source_links TEXT,
         last_reviewed DATE,
         notes TEXT,
-        embedding VECTOR(384) -- عشان نخزن الـ embeddings (bge-small-en = 384)
+        embedding VECTOR(384) -- store embeddings (bge-small-en = 384 dims)
     );
     """)
     conn.commit()
     conn.close()
 
+# Seed PostgreSQL with example entries
 def seed_postgres_examples():
     conn = get_connection()
     cur = conn.cursor()
@@ -154,6 +164,7 @@ def seed_postgres_examples():
     conn.commit()
     conn.close()
 
+# Search drug by name or generic
 def search_drug(drug_name: str):
     conn = get_connection()
     try:
@@ -184,6 +195,7 @@ def search_drug(drug_name: str):
     finally:
         conn.close()
 
+# Test connection
 def test_postgres_connection():
     try:
         conn = get_connection()
@@ -193,13 +205,15 @@ def test_postgres_connection():
         print("❌ Error connecting to PostgreSQL:", e)
 
 # -------------------------------
-# جزء (3): Embeddings Update
+# Part (3): Embeddings Update
 # -------------------------------
 model = SentenceTransformer("BAAI/bge-small-en")
 
+# Encode texts into embeddings
 def get_embeddings(texts):
     return model.encode(texts, convert_to_numpy=True).tolist()
 
+# Update rows without embeddings
 def update_embeddings():
     conn = get_connection()
     with conn.cursor() as cur:
@@ -234,14 +248,17 @@ if __name__ == "__main__":
     # Update embeddings
     update_embeddings()
 
-
+# -------------------------------
+# Extra: Add embeddings column if missing
+# -------------------------------
 def add_embeddings_column():
     conn = get_connection()
     cur = conn.cursor()
     
-    # ✅ فعل extension pgvector
+    # Enable pgvector extension
     cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     
+    # Add column only if it doesn't exist
     cur.execute("""
         DO $$
         BEGIN
