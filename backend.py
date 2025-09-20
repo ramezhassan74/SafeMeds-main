@@ -1,4 +1,3 @@
-# backend.py
 import os
 import requests
 import time
@@ -6,7 +5,7 @@ import logging
 import hashlib
 from typing import Dict, List
 from prompting import prompt_config   # Importing prompt configuration file
-from db import search_drug            # Function to fetch drug info from PostgreSQL
+from db import search_drug, insert_drug   # Import DB functions
 
 # ======================
 #   Gemini API Settings
@@ -19,20 +18,16 @@ url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash
 # ======================
 class SimpleCache:
     def __init__(self):
-        # Dictionary to store cached responses {hash: response}
         self.cache: Dict[str, str] = {}
 
     def _hash(self, query: str) -> str:
-        # Generate MD5 hash of the query (case-insensitive)
         return hashlib.md5(query.lower().encode()).hexdigest()
 
     def get(self, query: str):
-        # Retrieve response if query exists in cache
         key = self._hash(query)
         return self.cache.get(key)
 
     def set(self, query: str, response: str):
-        # Save query-response pair in cache
         key = self._hash(query)
         self.cache[key] = response
 
@@ -63,11 +58,56 @@ SYMPTOM_TO_DRUG = {
 }
 
 # ======================
-#   Function to Match Symptoms
+#   Add drug from text
+# ======================
+def add_drug_from_text(message: str):
+    """
+    Extracts drug info from user message and inserts into DB.
+    Expected format:
+    'عايز اضيف دواء اسمه باراسيتامول
+     لازمتة: مسكن ألم
+     هو ايه: Analgesic'
+    """
+    try:
+        lines = [l.strip() for l in message.split("\n") if l.strip()]
+        entry = {
+            "drug_name": None,
+            "generic_name": None,
+            "drug_class": None,
+            "indication": None,
+            "status_after_sleeve": None,
+            "reason": None,
+            "dose_adjustment_notes": None,
+            "administration_form": None,
+            "interactions": None,
+            "evidence_level": None,
+            "source_links": None,
+            "notes": None,
+        }
+
+        for line in lines:
+            if "اسم" in line:
+                entry["drug_name"] = line.split(":", 1)[-1].strip()
+            elif "لازمت" in line or "ليه" in line:
+                entry["indication"] = line.split(":", 1)[-1].strip()
+            elif "هو ايه" in line or "فئة" in line:
+                entry["drug_class"] = line.split(":", 1)[-1].strip()
+            elif "ملاحظة" in line:
+                entry["notes"] = line.split(":", 1)[-1].strip()
+
+        if not entry["drug_name"] or not entry["indication"]:
+            return "⚠️ لازم تكتب على الأقل اسم الدواء ولازمته عشان اقدر أضيفه."
+
+        insert_drug(entry)
+        return f"✅ تمت إضافة الدواء '{entry['drug_name']}' بنجاح!"
+    except Exception as e:
+        return f"❌ حصل خطأ أثناء الإضافة: {e}"
+
+# ======================
+#   Match Symptom
 # ======================
 def match_symptom(user_input: str):
     user_input = user_input.lower()
-    # Loop through keywords to find a matching symptom
     for symptom, keywords in SYMPTOMS_KEYWORDS.items():
         for kw in keywords:
             if kw in user_input:
@@ -78,27 +118,18 @@ def match_symptom(user_input: str):
 #   Main Chat Wrapper
 # ======================
 def gemini_chat_wrapper(message: str, history: List = []):
-    """
-    Handles user queries and integrates:
-    - Cache lookup
-    - Database drug search
-    - Symptom-to-drug mapping
-    - Gemini API response generation
-    
-    message: User query (str)
-    history: List of conversation history items (dict or tuple)
-    """
+    # 0️⃣ Check if user wants to add a drug
+    if "اضيف" in message or "أدخل" in message or "اضافة" in message:
+        return add_drug_from_text(message)
 
-    # 1️⃣ Check if response exists in cache
+    # 1️⃣ Cache lookup
     cached = cache.get(message)
     if cached:
         return cached
 
-    # 2️⃣ Try to fetch drug info directly from DB
+    # 2️⃣ DB search
     drug_info = search_drug(message)
-
     if drug_info:
-        # If drug found in DB, prepare detailed context
         relevant_context = f"""
 اسم الدواء: {drug_info['drug_name']}
 الاسم العلمي: {drug_info['generic_name']}
@@ -111,7 +142,7 @@ def gemini_chat_wrapper(message: str, history: List = []):
 ملاحظات عامة: {drug_info.get('notes', 'لا توجد')}
 """
     else:
-        # 3️⃣ If no direct drug match, try symptom matching
+        # 3️⃣ Symptom mapping
         symptom = match_symptom(message)
         if symptom:
             meds_list = SYMPTOM_TO_DRUG.get(symptom, [])
@@ -125,16 +156,13 @@ def gemini_chat_wrapper(message: str, history: List = []):
             else:
                 relevant_context = f"It seems you have {symptom}. Try resting, stay hydrated, and consult a doctor if symptoms persist."
         else:
-            # 4️⃣ If no match at all, return fallback message
             relevant_context = "❌ No direct match found for this drug or symptom in the database."
 
-    # 5️⃣ Build conversation history string
     history_text = "\n".join([
         f"{h['role']}: {h['message']}" if isinstance(h, dict) else f"{h[0]}: {h[1]}"
         for h in history
     ])
 
-    # 6️⃣ Construct final prompt
     final_prompt = f"""
 {prompt_config['instructions']}
 
@@ -148,28 +176,18 @@ QUESTION:
 {message}
 """
 
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": final_prompt},
-                ]
-            }
-        ]
-    }
+    payload = {"contents": [{"parts": [{"text": final_prompt}]}]}
 
-    # 7️⃣ Send request to Gemini API
     try:
         response = requests.post(url, json=payload, timeout=15)
     except requests.exceptions.RequestException as e:
         return f"❌ Network error: {e}"
 
-    # 8️⃣ Handle Gemini API response
     if response.status_code == 200:
         data = response.json()
         try:
             answer = data["candidates"][0]["content"]["parts"][0]["text"]
-            cache.set(message, answer)  # Save response to cache
+            cache.set(message, answer)
             return answer
         except Exception as e:
             return f"⚠️ Unexpected response format: {e}\n{data}"
@@ -183,8 +201,8 @@ logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
     start = time.time()
-    # Example test query
-    print(gemini_chat_wrapper("معدتي وجعاني وبردو عندي اسهال"))
+    print(gemini_chat_wrapper("عايز اضيف دواء اسمه باراسيتامول\nلازمتة: مسكن ألم\nهو ايه: Analgesic"))
     end = time.time()
     logging.info(f"Execution time: {end - start:.2f} seconds")
+
 
